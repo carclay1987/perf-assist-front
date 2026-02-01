@@ -9,7 +9,9 @@ export interface Entry {
   created_at: string; // ISO string
 }
 
-const API_BASE = 'http://localhost:8080';
+// Базовый URL бэкенда
+// В контейнеризированной среде API доступен по пути /api
+const API_BASE = '/api';
 
 export function getTodayDate(): string {
   const now = new Date();

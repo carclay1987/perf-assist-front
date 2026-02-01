@@ -1,20 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Calendar, Check } from 'lucide-react';
+import { Calendar, Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Card, CardHeader, CardContent } from './Card';
 import { Button } from './Button';
 import { TextArea } from './TextArea';
 import { TiptapRichTextArea } from './TiptapRichTextArea';
 import { Badge } from './Badge';
-import { createEntryForDate, createEntryForToday, fetchEntriesForDate, fetchEntriesForToday, getTodayDate, type Entry } from '../api/entries';
+import { createEntryForDate, type Entry, getTodayDate } from '../api/entries';
 
 const CURRENT_USER_ID = 'mock-user';
 
 function formatHumanDate(date: Date) {
-  // Проверка на валидность даты
   if (isNaN(date.getTime())) {
     return 'Некорректная дата';
   }
-  
+
   const formatter = new Intl.DateTimeFormat('ru-RU', {
     weekday: 'long',
     year: 'numeric',
@@ -34,10 +33,12 @@ export function TodayView() {
   const [originalFactText, setOriginalFactText] = useState('');
   const [hasPlan, setHasPlan] = useState(false);
   const [hasFact, setHasFact] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const [showLoading, setShowLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
-  const [minDate, setMinDate] = useState<string>(getTodayDate());
+  const [minDate] = useState<string>(getTodayDate());
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
 
   const formattedSelectedDate = useMemo(() => {
     const year = selectedDate.getFullYear();
@@ -45,28 +46,45 @@ export function TodayView() {
     const day = String(selectedDate.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   }, [selectedDate]);
+
   const [isSavingPlan, setIsSavingPlan] = useState(false);
   const [isSavingFact, setIsSavingFact] = useState(false);
   const [planSaved, setPlanSaved] = useState(false);
   const [factSaved, setFactSaved] = useState(false);
 
-  const todayDate = useMemo(() => new Date(), []);
-  const todayApiDate = useMemo(() => getTodayDate(), []);
+  const todayDate = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
+    let loadingTimer: NodeJS.Timeout | null = null;
 
     async function loadEntries() {
-      // Проверка на валидность даты
       if (isNaN(selectedDate.getTime())) {
-        // Если дата невалидна, не пытаемся загружать данные
         return;
       }
-      
+
       try {
-        setIsLoading(true);
+        // Устанавливаем таймер для отображения индикатора загрузки
+        // только если запрос занимает более 200 мс
+        loadingTimer = setTimeout(() => {
+          if (isMounted) {
+            setShowLoading(true);
+          }
+        }, 200);
+
         setError(null);
-        const data = await fetchEntriesForDate(formattedSelectedDate, CURRENT_USER_ID);
+        const data = await fetchEntriesForDateSafe(formattedSelectedDate);
+        
+        // Очищаем таймер, если данные пришли быстрее
+        if (loadingTimer) {
+          clearTimeout(loadingTimer);
+          loadingTimer = null;
+        }
+        
         if (!isMounted) return;
 
         setEntries(data);
@@ -79,23 +97,29 @@ export function TodayView() {
 
         if (existingPlan) {
           setPlanText(existingPlan.raw_text);
-          setOriginalPlanText(existingPlan.raw_text); // Устанавливаем исходное значение
+          setOriginalPlanText(existingPlan.raw_text);
         } else {
-          setPlanText(''); // Сброс текста, если данных нет
-          setOriginalPlanText(''); // Сброс исходного значения
+          setPlanText('');
+          setOriginalPlanText('');
         }
+
         if (existingFact) {
           setFactText(existingFact.raw_text);
-          setOriginalFactText(existingFact.raw_text); // Устанавливаем исходное значение
+          setOriginalFactText(existingFact.raw_text);
         } else {
-          setFactText(''); // Сброс текста, если данных нет
-          setOriginalFactText(''); // Сброс исходного значения
+          setFactText('');
+          setOriginalFactText('');
         }
       } catch (err) {
+        // Очищаем таймер при ошибке
+        if (loadingTimer) {
+          clearTimeout(loadingTimer);
+          loadingTimer = null;
+        }
+        
         if (!isMounted) return;
         console.error('Ошибка при загрузке записей за выбранную дату', err);
         setError('Не удалось загрузить записи за выбранную дату. Попробуйте обновить страницу позже.');
-        // В случае ошибки также сбрасываем текст
         setPlanText('');
         setFactText('');
         setOriginalPlanText('');
@@ -103,28 +127,32 @@ export function TodayView() {
       } finally {
         if (isMounted) {
           setIsLoading(false);
+          setShowLoading(false);
         }
       }
     }
 
+    setIsLoading(true);
+    setShowLoading(false);
     loadEntries();
-    // Сбрасываем состояние "сохранено" при смене даты
     setPlanSaved(false);
     setFactSaved(false);
 
     return () => {
       isMounted = false;
+      // Очищаем таймер при размонтировании компонента
+      if (loadingTimer) {
+        clearTimeout(loadingTimer);
+      }
     };
   }, [formattedSelectedDate]);
 
   const handleSavePlan = async () => {
-    // Проверка на валидность даты
     if (isNaN(selectedDate.getTime())) {
-      // Если дата невалидна, не пытаемся сохранять данные
       setError('Некорректная дата. Пожалуйста, выберите корректную дату.');
       return;
     }
-    
+
     if (!planText.trim()) return;
 
     setIsSavingPlan(true);
@@ -140,6 +168,7 @@ export function TodayView() {
       setHasPlan(true);
       setPlanSaved(true);
       setError(null);
+      setOriginalPlanText(planText);
     } catch (err) {
       console.error('Ошибка при сохранении плана', err);
       setError('Не удалось сохранить план. Попробуйте ещё раз.');
@@ -149,13 +178,11 @@ export function TodayView() {
   };
 
   const handleSaveFact = async () => {
-    // Проверка на валидность даты
     if (isNaN(selectedDate.getTime())) {
-      // Если дата невалидна, не пытаемся сохранять данные
       setError('Некорректная дата. Пожалуйста, выберите корректную дату.');
       return;
     }
-    
+
     if (!factText.trim()) return;
 
     setIsSavingFact(true);
@@ -171,6 +198,7 @@ export function TodayView() {
       setHasFact(true);
       setFactSaved(true);
       setError(null);
+      setOriginalFactText(factText);
     } catch (err) {
       console.error('Ошибка при сохранении факта', err);
       setError('Не удалось сохранить факт. Попробуйте ещё раз.');
@@ -179,55 +207,43 @@ export function TodayView() {
     }
   };
 
-  const todayHumanLabel = useMemo(() => `Сегодня, ${formatHumanDate(todayDate)}`, [todayDate]);
-
-  const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const value = event.target.value;
-    // Проверка на пустое значение
-    if (!value) {
-      // Если значение пустое, устанавливаем текущую дату
-      setSelectedDate(new Date());
-      return;
-    }
-    
-    const newDate = new Date(value);
-    // Проверка на валидность даты
+  const handleDateChange = (newDate: Date) => {
     if (isNaN(newDate.getTime())) {
-      // Если дата невалидна, не обновляем состояние
       return;
     }
-    
-    // Проверка, что дата не в прошлом
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    newDate.setHours(0, 0, 0, 0);
-    
-    if (newDate < today) {
-      // Если дата в прошлом, не обновляем состояние
+    const candidate = new Date(newDate);
+    candidate.setHours(0, 0, 0, 0);
+
+    if (candidate < today) {
       return;
     }
-    
-    setSelectedDate(newDate);
+
+    setSelectedDate(candidate);
   };
 
+  const todayHumanLabel = useMemo(
+    () => `Сегодня, ${formatHumanDate(todayDate)}`,
+    [todayDate],
+  );
 
   const selectedDateHumanLabel = useMemo(() => {
-    // Проверка на валидность даты
     if (isNaN(selectedDate.getTime())) {
       return 'Некорректная дата';
     }
-    
+
     if (selectedDate.toDateString() === todayDate.toDateString()) {
       return todayHumanLabel;
     }
     return formatHumanDate(selectedDate);
-  }, [selectedDate, todayDate, todayHumanLabel, formattedSelectedDate]);
+  }, [selectedDate, todayDate, todayHumanLabel]);
 
   const plansHeader = useMemo(() => {
     if (selectedDate.toDateString() === todayDate.toDateString()) {
       return 'Планы на сегодня';
     }
-    // Форматируем дату как DD.MM.YYYY
     const day = String(selectedDate.getDate()).padStart(2, '0');
     const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
     const year = selectedDate.getFullYear();
@@ -238,20 +254,33 @@ export function TodayView() {
     if (selectedDate.toDateString() === todayDate.toDateString()) {
       return 'Факты за сегодня';
     }
-    // Форматируем дату как DD.MM.YYYY
     const day = String(selectedDate.getDate()).padStart(2, '0');
     const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
     const year = selectedDate.getFullYear();
     return `Факты за ${day}.${month}.${year}`;
   }, [selectedDate, todayDate]);
 
-  const isPlanChanged = useMemo(() => {
-    return planText !== originalPlanText;
-  }, [planText, originalPlanText, formattedSelectedDate]);
+  const isPlanChanged = useMemo(
+    () => planText !== originalPlanText,
+    [planText, originalPlanText],
+  );
 
-  const isFactChanged = useMemo(() => {
-    return factText !== originalFactText;
-  }, [factText, originalFactText, formattedSelectedDate]);
+  const isFactChanged = useMemo(
+    () => factText !== originalFactText,
+    [factText, originalFactText],
+  );
+
+  const handlePrevDay = () => {
+    const next = new Date(selectedDate);
+    next.setDate(next.getDate() - 1);
+    handleDateChange(next);
+  };
+
+  const handleNextDay = () => {
+    const next = new Date(selectedDate);
+    next.setDate(next.getDate() + 1);
+    handleDateChange(next);
+  };
 
   return (
     <div className="max-w-4xl mx-auto p-8">
@@ -262,22 +291,57 @@ export function TodayView() {
         </div>
         <div className="flex items-center justify-between text-muted-foreground mb-2">
           <div className="flex items-center gap-3">
-            <span style={{ color: 'var(--muted-foreground)' }}>
+            <button
+              type="button"
+              onClick={() => setIsCalendarOpen((prev) => !prev)}
+              className="inline-flex items-center justify-center rounded-full p-1.5 hover:bg-muted transition-colors"
+              aria-label="Выбрать дату"
+            >
               <Calendar className="w-5 h-5" />
-            </span>
+            </button>
             <span>{selectedDateHumanLabel}</span>
             {planSaved && <Badge variant="success">План сохранён</Badge>}
             {factSaved && <Badge variant="info">Факт сохранён</Badge>}
           </div>
-          {/* Используем стандартный HTML5 пикер даты. Пользователь может выбрать дату, вручную ввести или использовать встроенный календарь. */}
-          <input
-            type="date"
-            value={formattedSelectedDate}
-            min={minDate}
-            onChange={handleDateChange}
-            className="px-4 py-2 bg-input-background border border-input rounded-lg text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-          />
+
+          {/* Стрелки навигации по дням */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handlePrevDay}
+              className="p-3 px-2 rounded-lg border border-input bg-background text-muted-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              disabled={formattedSelectedDate <= minDate}
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+
+            <input
+              type="date"
+              value={formattedSelectedDate}
+              min={minDate}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (!value) {
+                  handleDateChange(new Date());
+                  return;
+                }
+                const newDate = new Date(value);
+                handleDateChange(newDate);
+              }}
+              className="px-4 py-2 bg-input-background border border-input rounded-lg text-foreground focus:outline-none focus:ring-2 focus:ring-ring cursor-pointer"
+            />
+
+            <button
+              type="button"
+              onClick={handleNextDay}
+              className="p-3 px-2 rounded-lg border border-input bg-background text-muted-foreground hover:bg-muted cursor-pointer"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
         </div>
+
+
         {error && (
           <div className="text-sm text-destructive mt-1">
             {error}
@@ -302,7 +366,7 @@ export function TodayView() {
             </p>
           </CardHeader>
           <CardContent className="pt-6">
-            {isLoading && (
+            {showLoading && (
               <p className="text-sm text-muted-foreground mb-2">Загружаем планы на сегодня…</p>
             )}
 
@@ -331,7 +395,7 @@ export function TodayView() {
             <div className="flex justify-end">
               <Button
                 onClick={handleSavePlan}
-                disabled={planSaved || !isPlanChanged}
+                disabled={isSavingPlan || planSaved || !isPlanChanged}
                 variant="primary"
                 className={planSaved ? 'border bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/20 [&:hover]:translate-x-0' : ''}
               >
@@ -351,7 +415,7 @@ export function TodayView() {
             </p>
           </CardHeader>
           <CardContent className="pt-6">
-            {isLoading && (
+            {showLoading && (
               <p className="text-sm text-muted-foreground mb-2">Загружаем факты за сегодня…</p>
             )}
 
@@ -380,7 +444,7 @@ export function TodayView() {
             <div className="flex justify-end">
               <Button
                 onClick={handleSaveFact}
-                disabled={factSaved || !isFactChanged}
+                disabled={isSavingFact || factSaved || !isFactChanged}
                 variant="primary"
                 className={factSaved ? 'border bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/20 [&:hover]:translate-x-0' : ''}
               >
@@ -394,3 +458,15 @@ export function TodayView() {
     </div>
   );
 }
+
+async function fetchEntriesForDateSafe(date: string): Promise<Entry[]> {
+  try {
+    const { fetchEntriesForDate } = await import('../api/entries');
+    const data = await fetchEntriesForDate(date, CURRENT_USER_ID);
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    console.error('Ошибка при безопасной загрузке записей', e);
+    return [];
+  }
+}
+

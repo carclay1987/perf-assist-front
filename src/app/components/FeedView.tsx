@@ -5,7 +5,7 @@ import { Card, CardHeader, CardContent } from './Card';
 import { Button } from './Button';
 import { Badge } from './Badge';
 import { TiptapRichTextArea } from './TiptapRichTextArea';
-import { createEntryForDate } from '../api/entries';
+import { createEntryForDate, getTodayDate } from '../api/entries';
 
 import { Entry as ApiEntry } from '../api/entries';
 
@@ -14,7 +14,8 @@ type Entry = ApiEntry & {
 };
 
 export function FeedView() {
-  const [filterPeriod, setFilterPeriod] = useState<'week' | 'month' | 'quarter' | 'custom'>('month');
+  const [filterPeriod, setFilterPeriod] = useState<'week' | 'month' | 'quarter' | 'custom'>('week');
+  const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedEntry, setSelectedEntry] = useState<Entry | null>(null);
   const [editedText, setEditedText] = useState('');
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -30,13 +31,51 @@ export function FeedView() {
     const fetchEntries = async () => {
       setIsLoading(true);
       try {
-        const response = await fetch('/api/entries');
+        // Определяем диапазон дат в зависимости от выбранного периода и текущей опорной даты
+        const base = new Date(currentDate);
+        const fromDate = new Date(base);
+        const toDate = new Date(base);
+
+        if (filterPeriod === 'week') {
+          // Неделя: с понедельника по воскресенье
+          const day = base.getDay() || 7; // 1-7, где 1 — понедельник
+          fromDate.setDate(base.getDate() - day + 1);
+          toDate.setDate(fromDate.getDate() + 6);
+        } else if (filterPeriod === 'month') {
+          // Месяц: с первого по последний день месяца
+          fromDate.setDate(1);
+          toDate.setMonth(fromDate.getMonth() + 1, 0); // последний день месяца
+        } else if (filterPeriod === 'quarter') {
+          // Квартал: 3 месяца, начиная с начала квартала
+          const quarter = Math.floor(fromDate.getMonth() / 3); // 0,1,2,3
+          fromDate.setMonth(quarter * 3, 1);
+          const endMonth = quarter * 3 + 3;
+          toDate.setMonth(endMonth, 0); // последний день квартала
+        } else {
+          // custom или неизвестный — по умолчанию один день
+          fromDate.setHours(0, 0, 0, 0);
+          toDate.setHours(0, 0, 0, 0);
+        }
+
+        const format = (d: Date) => d.toISOString().split('T')[0];
+
+        const params = new URLSearchParams({
+          from: format(fromDate),
+          to: format(toDate),
+          user_id: 'mock-user',
+        });
+
+        const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || '/api'}/entries?${params.toString()}`);
         if (!response.ok) {
           console.error('Ошибка при загрузке ленты:', response.status, response.statusText);
           return;
         }
         const data = await response.json();
-        const mapped: Entry[] = data.map((entry: any) => ({
+
+        // Бэкенд может вернуть null/undefined или не-массив — в этом случае считаем, что записей нет
+        const safeArray = Array.isArray(data) ? data : [];
+
+        const mapped: Entry[] = safeArray.map((entry: any) => ({
           ...entry,
           text: entry.raw_text,
         }));
@@ -49,7 +88,7 @@ export function FeedView() {
     };
 
     fetchEntries();
-  }, []);
+  }, [filterPeriod, currentDate]);
 
   useEffect(() => {
     const deleteEntries = async () => {
@@ -57,9 +96,12 @@ export function FeedView() {
         if (entries.length === 2) {
           // Удалить все записи на этот день
           try {
-            const response = await fetch(`/api/entries/${date}`, {
-              method: 'DELETE',
-            });
+            const response = await fetch(
+              `${import.meta.env.VITE_API_BASE_URL || '/api'}/entries/${date}`,
+              {
+                method: 'DELETE',
+              }
+            );
             if (!response.ok) {
               console.error('Ошибка при удалении записей:', response.status, response.statusText);
               continue;
@@ -73,22 +115,29 @@ export function FeedView() {
           // Сохранить пустоту в запись
           const entry = entries[0];
           try {
-            const response = await fetch(`/api/entries/${entry.id}`, {
-              method: 'PUT',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                ...entry,
-                raw_text: '',
-              }),
-            });
+            const response = await fetch(
+              `${import.meta.env.VITE_API_BASE_URL || '/api'}/entries/${entry.id}`,
+              {
+                method: 'PUT',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  ...entry,
+                  raw_text: '',
+                }),
+              }
+            );
             if (!response.ok) {
               console.error('Ошибка при обновлении записи:', response.status, response.statusText);
               continue;
             }
-            // Обновляем список записей
-            setEntries(prev => prev.map(e => e.id === entry.id ? {...e, raw_text: '', text: ''} : e));
+            // Обновляем список записей: оставляем запись, но делаем её "пустой"
+            setEntries(prev => prev.map(e =>
+              e.id === entry.id
+                ? { ...e, raw_text: '', text: '' }
+                : e
+            ));
           } catch (error) {
             console.error('Ошибка сети при обновлении записи:', error);
           }
@@ -168,6 +217,43 @@ export function FeedView() {
     
     const options: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short' };
     return `${start.toLocaleDateString('ru-RU', options)} - ${end.toLocaleDateString('ru-RU', options)}`;
+  };
+
+  // Навигация по периодам (вперёд/назад) — аналогично дизайн-проекту
+  const navigatePeriod = (direction: 'prev' | 'next') => {
+    const newDate = new Date(currentDate);
+
+    if (filterPeriod === 'week') {
+      newDate.setDate(newDate.getDate() + (direction === 'next' ? 7 : -7));
+    } else if (filterPeriod === 'month') {
+      // Используем setMonth с установкой дня в 1, чтобы избежать пропуска месяцев
+      // при переходе с конца месяца (например, с 31 января на март, пропуская февраль)
+      newDate.setDate(1);
+      newDate.setMonth(newDate.getMonth() + (direction === 'next' ? 1 : -1));
+    } else if (filterPeriod === 'quarter') {
+      newDate.setMonth(newDate.getMonth() + (direction === 'next' ? 3 : -3));
+    }
+
+    setCurrentDate(newDate);
+  };
+
+  const getPeriodTitle = () => {
+    if (filterPeriod === 'week') {
+      const weekStart = new Date(currentDate);
+      const day = weekStart.getDay() || 7;
+      weekStart.setDate(currentDate.getDate() - day + 1);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 6);
+
+      const options: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short' };
+      return `${weekStart.toLocaleDateString('ru-RU', options)} - ${weekEnd.toLocaleDateString('ru-RU', options)}`;
+    } else if (filterPeriod === 'month') {
+      return currentDate.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+    } else if (filterPeriod === 'quarter') {
+      const quarter = Math.floor(currentDate.getMonth() / 3) + 1;
+      return `Q${quarter} ${currentDate.getFullYear()}`;
+    }
+    return '';
   };
 
   const formatDate = (dateStr: string) => {
@@ -286,48 +372,69 @@ export function FeedView() {
             <h1 className="text-3xl font-semibold text-foreground mb-4">Лента</h1>
             
             {/* Filters */}
-            <div className="flex items-center gap-4 mb-6">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Filter className="w-5 h-5" />
-                <span className="text-sm">Период:</span>
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Filter className="w-5 h-5" />
+                  <span className="text-sm">Период:</span>
+                </div>
+                <div className="flex gap-2">
+                  <motion.div
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    <Button
+                      variant={filterPeriod === 'week' ? 'primary' : 'outline'}
+                      onClick={() => setFilterPeriod('week')}
+                      className="px-4 py-2 text-sm"
+                    >
+                      Неделя
+                    </Button>
+                  </motion.div>
+                  <motion.div
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    <Button
+                      variant={filterPeriod === 'month' ? 'primary' : 'outline'}
+                      onClick={() => setFilterPeriod('month')}
+                      className="px-4 py-2 text-sm"
+                    >
+                      Месяц
+                    </Button>
+                  </motion.div>
+                  <motion.div
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    <Button
+                      variant={filterPeriod === 'quarter' ? 'primary' : 'outline'}
+                      onClick={() => setFilterPeriod('quarter')}
+                      className="px-4 py-2 text-sm"
+                    >
+                      Квартал
+                    </Button>
+                  </motion.div>
+                </div>
               </div>
-              <div className="flex gap-2">
-                <motion.div
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
+
+              {/* Period navigation */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => navigatePeriod('prev')}
+                  className="p-2 hover:bg-muted rounded-lg transition-colors"
                 >
-                  <Button
-                    variant={filterPeriod === 'week' ? 'primary' : 'outline'}
-                    onClick={() => setFilterPeriod('week')}
-                    className="px-4 py-2 text-sm"
-                  >
-                    Неделя
-                  </Button>
-                </motion.div>
-                <motion.div
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
+                  <span className="text-sm text-foreground">‹</span>
+                </button>
+                <span className="text-sm font-medium text-foreground min-w-[200px] text-center capitalize">
+                  {getPeriodTitle()}
+                </span>
+                <button
+                  onClick={() => navigatePeriod('next')}
+                  className="p-2 hover:bg-muted rounded-lg transition-colors"
                 >
-                  <Button
-                    variant={filterPeriod === 'month' ? 'primary' : 'outline'}
-                    onClick={() => setFilterPeriod('month')}
-                    className="px-4 py-2 text-sm"
-                  >
-                    Месяц
-                  </Button>
-                </motion.div>
-                <motion.div
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                >
-                  <Button
-                    variant={filterPeriod === 'quarter' ? 'primary' : 'outline'}
-                    onClick={() => setFilterPeriod('quarter')}
-                    className="px-4 py-2 text-sm"
-                  >
-                    Квартал
-                  </Button>
-                </motion.div>
+                  <span className="text-sm text-foreground">›</span>
+                </button>
               </div>
             </div>
 
@@ -344,31 +451,39 @@ export function FeedView() {
           </div>
 
           {/* Entries grouped by week */}
-          <div className="space-y-8">
-            {Object.entries(groupedEntries)
-              .sort(([a], [b]) => b.localeCompare(a))
-              .map(([weekStart, entries]) => {
-                const dateGroups = groupByDate(entries);
-
-                return (
-                  <div key={weekStart}>
-                    <h2 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
-                      <Calendar className="w-5 h-5 text-muted-foreground" />
-                      {formatWeekRange(weekStart)}
-                    </h2>
-                    <div className="space-y-4">
-                      {Object.entries(dateGroups)
-                        .sort(([a], [b]) => b.localeCompare(a))
-                        .filter(([date, { plan, fact }]) => !(emptyDates[date] && !deletingDates[date] && !plan && !fact))
-                        .map(([date, { plan, fact }]) => (
-                          <motion.div
-                            key={date}
-                            className="space-y-2"
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -20 }}
-                            transition={{ duration: 0.3 }}
-                          >
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={`${filterPeriod}-${currentDate.toISOString()}`}
+              className="space-y-8"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -12 }}
+              transition={{ duration: 0.18 }}
+            >
+              {Object.entries(groupedEntries)
+                .sort(([a], [b]) => b.localeCompare(a))
+                .map(([weekStart, entries]) => {
+                  const dateGroups = groupByDate(entries);
+ 
+                  return (
+                    <div key={weekStart}>
+                      <h2 className="text-lg font-semibold text-foreground mb-4 flex items-center gap-2">
+                        <Calendar className="w-5 h-5 text-muted-foreground" />
+                        {formatWeekRange(weekStart)}
+                      </h2>
+                      <div className="space-y-4">
+                        {Object.entries(dateGroups)
+                          .sort(([a], [b]) => b.localeCompare(a))
+                          .filter(([date, { plan, fact }]) => !(emptyDates[date] && !deletingDates[date] && !plan && !fact))
+                          .map(([date, { plan, fact }]) => (
+                            <motion.div
+                              key={date}
+                              className="space-y-2"
+                              initial={{ opacity: 0, y: 8 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: -8 }}
+                              transition={{ duration: 0.14 }}
+                            >
                             <div className="text-sm text-muted-foreground px-1">
                               {formatDate(date)}
                             </div>
@@ -378,53 +493,67 @@ export function FeedView() {
                                 {(!deletingEntries[date]?.plan) && (
                                   <motion.div
                                     className="cursor-pointer"
-                                    whileHover={{ y: -5, boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)' }}
+                                    whileHover={{ y: -2 }}
                                     initial={{ opacity: 1, scale: 1 }}
                                     animate={{ opacity: 1, scale: 1 }}
                                     exit={{ opacity: 0, scale: 0.8 }}
                                     transition={{ duration: 0.3, type: 'spring', stiffness: 300, damping: 20 }}
-                                onClick={() => openEntry(plan || {
-                                  id: '',
-                                  user_id: '',
-                                  date,
-                                  type: 'plan',
-                                  raw_text: '',
-                                  created_at: '',
-                                  text: ''
-                                })}
-                              >
-                                <Card>
-                                  <CardContent className="p-4 h-full">
-                                    <div className="flex flex-col h-full">
-                                      <div className="flex items-center justify-between mb-3">
-                                        <Badge variant="warning">План</Badge>
-                                        <div className="flex space-x-2">
-                                          <Edit2 className="w-4 h-4 text-muted-foreground" />
-                                          {plan && (
-                                            <Trash2
-                                              className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-red-500"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleDeleteEntry(plan);
-                                              }}
-                                            />
-                                          )}
+                                    onClick={() => openEntry(plan || {
+                                      id: '',
+                                      user_id: '',
+                                      date,
+                                      type: 'plan',
+                                      raw_text: '',
+                                      created_at: '',
+                                      text: ''
+                                    })}
+                                  >
+                                    <Card className={`shadow-md hover:shadow-lg transition-shadow duration-300 ${!plan || !plan.text || plan.text.trim().length === 0 ? 'opacity-40' : ''}`}>
+                                      <CardContent className="p-4 h-full">
+                                        <div className="flex flex-col h-full">
+                                          <div className="flex items-center justify-between mb-3">
+                                            <Badge variant="warning">План</Badge>
+                                            <div className="flex space-x-2">
+                                              <Edit2 className="w-4 h-4 text-muted-foreground" />
+                                              {plan && plan.text && plan.text.trim().length > 0 && (
+                                                <Trash2
+                                                  className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-red-500"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleDeleteEntry(plan);
+                                                  }}
+                                                />
+                                              )}
+                                            </div>
+                                          </div>
+                                          <AnimatePresence mode="wait">
+                                            {plan && plan.text && plan.text.trim().length > 0 ? (
+                                              <motion.div
+                                                key="plan-content"
+                                                className="text-foreground text-sm flex-1 prose prose-sm max-w-none [&_ul[data-type='taskList']]:list-none [&_ul[data-type='taskList']_li]:flex [&_ul[data-type='taskList']_li]:items-start [&_ul[data-type='taskList']_li]:ml-0 [&_ul[data-type='taskList']_input]:mr-2 [&_ul[data-type='taskList']_input]:mt-1"
+                                                dangerouslySetInnerHTML={{ __html: plan.text }}
+                                                initial={{ opacity: 0 }}
+                                                animate={{ opacity: 1 }}
+                                                exit={{ opacity: 0 }}
+                                                transition={{ duration: 0.2 }}
+                                              />
+                                            ) : (
+                                              <motion.p
+                                                key="no-plan"
+                                                className="text-muted-foreground text-sm italic flex-1"
+                                                initial={{ opacity: 0 }}
+                                                animate={{ opacity: 1 }}
+                                                exit={{ opacity: 0 }}
+                                                transition={{ duration: 0.2 }}
+                                              >
+                                                Нет плана
+                                              </motion.p>
+                                            )}
+                                          </AnimatePresence>
                                         </div>
-                                      </div>
-                                      {plan ? (
-                                        <div
-                                          className="text-foreground text-sm flex-1 prose prose-sm max-w-none [&_ul[data-type='taskList']]:list-none [&_ul[data-type='taskList']_li]:flex [&_ul[data-type='taskList']_li]:items-start [&_ul[data-type='taskList']_li]:ml-0 [&_ul[data-type='taskList']_input]:mr-2 [&_ul[data-type='taskList']_input]:mt-1"
-                                          dangerouslySetInnerHTML={{ __html: plan.text }}
-                                        />
-                                      ) : (
-                                        <p className="text-muted-foreground text-sm italic flex-1 opacity-40">
-                                          Нет плана
-                                        </p>
-                                      )}
-                                    </div>
-                                  </CardContent>
-                                </Card>
-                              </motion.div>
+                                      </CardContent>
+                                    </Card>
+                                  </motion.div>
                                 )}
                               </AnimatePresence>
 
@@ -433,53 +562,67 @@ export function FeedView() {
                                 {(!deletingEntries[date]?.fact) && (
                                   <motion.div
                                     className="cursor-pointer"
-                                    whileHover={{ y: -5, boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)' }}
+                                    whileHover={{ y: -2 }}
                                     initial={{ opacity: 1, scale: 1 }}
                                     animate={{ opacity: 1, scale: 1 }}
                                     exit={{ opacity: 0, scale: 0.8 }}
                                     transition={{ duration: 0.3, type: 'spring', stiffness: 300, damping: 20 }}
-                                onClick={() => openEntry(fact || {
-                                  id: '',
-                                  user_id: '',
-                                  date,
-                                  type: 'fact',
-                                  raw_text: '',
-                                  created_at: '',
-                                  text: ''
-                                })}
-                              >
-                                <Card>
-                                  <CardContent className="p-4 h-full">
-                                    <div className="flex flex-col h-full">
-                                      <div className="flex items-center justify-between mb-3">
-                                        <Badge variant="success">Факт</Badge>
-                                        <div className="flex space-x-2">
-                                          <Edit2 className="w-4 h-4 text-muted-foreground" />
-                                          {fact && (
-                                            <Trash2
-                                              className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-red-500"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleDeleteEntry(fact);
-                                              }}
-                                            />
-                                          )}
+                                    onClick={() => openEntry(fact || {
+                                      id: '',
+                                      user_id: '',
+                                      date,
+                                      type: 'fact',
+                                      raw_text: '',
+                                      created_at: '',
+                                      text: ''
+                                    })}
+                                  >
+                                    <Card className={`shadow-md hover:shadow-lg transition-shadow duration-300 ${!fact || !fact.text || fact.text.trim().length === 0 ? 'opacity-40' : ''}`}>
+                                      <CardContent className="p-4 h-full">
+                                        <div className="flex flex-col h-full">
+                                          <div className="flex items-center justify-between mb-3">
+                                            <Badge variant="success">Факт</Badge>
+                                            <div className="flex space-x-2">
+                                              <Edit2 className="w-4 h-4 text-muted-foreground" />
+                                              {fact && fact.text && fact.text.trim().length > 0 && (
+                                                <Trash2
+                                                  className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-red-500"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleDeleteEntry(fact);
+                                                  }}
+                                                />
+                                              )}
+                                            </div>
+                                          </div>
+                                          <AnimatePresence mode="wait">
+                                            {fact && fact.text && fact.text.trim().length > 0 ? (
+                                              <motion.div
+                                                key="fact-content"
+                                                className="text-foreground text-sm flex-1 prose prose-sm max-w-none [&_ul[data-type='taskList']]:list-none [&_ul[data-type='taskList']_li]:flex [&_ul[data-type='taskList']_li]:items-start [&_ul[data-type='taskList']_li]:ml-0 [&_ul[data-type='taskList']_input]:mr-2 [&_ul[data-type='taskList']_input]:mt-1"
+                                                dangerouslySetInnerHTML={{ __html: fact.text }}
+                                                initial={{ opacity: 0 }}
+                                                animate={{ opacity: 1 }}
+                                                exit={{ opacity: 0 }}
+                                                transition={{ duration: 0.2 }}
+                                              />
+                                            ) : (
+                                              <motion.p
+                                                key="no-fact"
+                                                className="text-muted-foreground text-sm italic flex-1"
+                                                initial={{ opacity: 0 }}
+                                                animate={{ opacity: 1 }}
+                                                exit={{ opacity: 0 }}
+                                                transition={{ duration: 0.2 }}
+                                              >
+                                                Нет факта
+                                              </motion.p>
+                                            )}
+                                          </AnimatePresence>
                                         </div>
-                                      </div>
-                                      {fact ? (
-                                        <div
-                                          className="text-foreground text-sm flex-1 prose prose-sm max-w-none [&_ul[data-type='taskList']]:list-none [&_ul[data-type='taskList']_li]:flex [&_ul[data-type='taskList']_li]:items-start [&_ul[data-type='taskList']_li]:ml-0 [&_ul[data-type='taskList']_input]:mr-2 [&_ul[data-type='taskList']_input]:mt-1"
-                                          dangerouslySetInnerHTML={{ __html: fact.text }}
-                                        />
-                                      ) : (
-                                        <p className="text-muted-foreground text-sm italic flex-1 opacity-40">
-                                          Нет факта
-                                        </p>
-                                      )}
-                                    </div>
-                                  </CardContent>
-                                </Card>
-                              </motion.div>
+                                      </CardContent>
+                                    </Card>
+                                  </motion.div>
                                 )}
                               </AnimatePresence>
                             </div>
@@ -489,7 +632,8 @@ export function FeedView() {
                   </div>
                 );
               })}
-          </div>
+            </motion.div>
+          </AnimatePresence>
         </div>
       </div>
 
